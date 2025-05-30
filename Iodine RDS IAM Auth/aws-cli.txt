@@ -1,0 +1,10 @@
+aws configure list-profiles
+
+List of databases:
+\l
+
+Show detailed information about a specific table:
+\dt
+
+List tables with more details:
+\dt+

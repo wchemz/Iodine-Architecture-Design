@@ -1,0 +1,517 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Multi-Region Disaster Recovery Infrastructure for Iodine Software'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [production, staging, development]
+    Description: Environment type for the stack
+
+  AMIId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Description: Amazon Linux 2 AMI ID
+
+  CertificateArn:
+    Type: String
+    Description: ARN of the SSL certificate in ACM
+
+  HostedZoneId:
+    Type: String
+    Description: Route53 hosted zone ID
+
+  PrimaryVPC:
+    Type: String
+    Description: VPC ID in primary region
+
+  DRVPC:
+    Type: String
+    Description: VPC ID in DR region
+
+  PrimaryPrivateSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of private subnet IDs in primary region
+
+  DRPrivateSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of private subnet IDs in DR region
+
+  PrimaryPublicSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of public subnet IDs in primary region
+
+  DRPublicSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of public subnet IDs in DR region
+
+  PrimaryDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group ID for primary Aurora cluster
+
+  DRDBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group ID for DR Aurora cluster
+
+  PrimaryDBSubnetGroup:
+    Type: String
+    Description: DB subnet group name in primary region
+
+  DRDBSubnetGroup:
+    Type: String
+    Description: DB subnet group name in DR region
+
+  PrimaryRegion:
+    Type: String
+    Default: us-east-1
+    Description: Primary AWS region
+
+  DRRegion:
+    Type: String
+    Default: us-east-2
+    Description: Disaster Recovery AWS region
+
+  DBInstanceClass:
+    Type: String
+    Default: db.r7g.xlarge
+    Description: Aurora instance class
+
+  DRDBInstanceClass:
+    Type: String
+    Default: db.r7g.large
+    Description: DR Aurora instance class (smaller for cost savings)
+
+  EC2InstanceType:
+    Type: String
+    Default: c6g.xlarge
+    Description: EC2 instance type for application servers
+
+  DREC2InstanceType:
+    Type: String
+    Default: t3.small
+    Description: DR EC2 instance type for warm standby
+
+  BackupRetentionPeriod:
+    Type: Number
+    Default: 35
+    Description: Number of days to retain backups
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, production]
+
+Resources:
+  # Route53 Health Check
+  PrimaryHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        Port: 443
+        Type: HTTPS
+        ResourcePath: /health
+        FullyQualifiedDomainName: !GetAtt PrimaryALB.DNSName
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: Primary Region Health Check
+
+  # Route53 DNS Records
+  DNSRecords:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      RecordSets:
+        - Name: !Sub app.${Environment}.iodinesoftware.com
+          Type: A
+          SetIdentifier: primary
+          HealthCheckId: !Ref PrimaryHealthCheck
+          AliasTarget:
+            DNSName: !GetAtt PrimaryALB.DNSName
+            HostedZoneId: !GetAtt PrimaryALB.CanonicalHostedZoneID
+            EvaluateTargetHealth: true
+          Failover: PRIMARY
+        - Name: !Sub app.${Environment}.iodinesoftware.com
+          Type: A
+          SetIdentifier: secondary
+          AliasTarget:
+            DNSName: !GetAtt DRALB.DNSName
+            HostedZoneId: !GetAtt DRALB.CanonicalHostedZoneID
+            EvaluateTargetHealth: true
+          Failover: SECONDARY
+
+  # Security Groups
+  PrimaryAppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for primary region application servers
+      VpcId: !Ref PrimaryVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref PrimaryALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-primary-app-sg
+
+  PrimaryALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for primary region ALB
+      VpcId: !Ref PrimaryVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-primary-alb-sg
+
+  DRAppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for DR region application servers
+      VpcId: !Ref DRVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref DRALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-dr-app-sg
+
+  DRALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for DR region ALB
+      VpcId: !Ref DRVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-dr-alb-sg
+
+  # Load Balancers
+  PrimaryALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${Environment}-primary-alb
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      SecurityGroups:
+        - !Ref PrimaryALBSecurityGroup
+      Subnets: !Ref PrimaryPublicSubnets
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-primary-alb
+
+  PrimaryTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${Environment}-primary-tg
+      Port: 443
+      Protocol: HTTPS
+      VpcId: !Ref PrimaryVPC
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTPS
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-primary-tg
+
+  PrimaryListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref PrimaryALB
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref PrimaryTargetGroup
+
+  DRALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${Environment}-dr-alb
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+      SecurityGroups:
+        - !Ref DRALBSecurityGroup
+      Subnets: !Ref DRPublicSubnets
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-dr-alb
+
+  DRTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${Environment}-dr-tg
+      Port: 443
+      Protocol: HTTPS
+      VpcId: !Ref DRVPC
+      HealthCheckPath: /health
+      HealthCheckProtocol: HTTPS
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${Environment}-dr-tg
+
+  DRListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref DRALB
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref DRTargetGroup
+
+  # Backup Resources
+  BackupKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for AWS Backup encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow Backup Service
+            Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: '*'
+
+  BackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
+        - arn:aws:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForRestores
+
+  # Primary Region Resources
+  PrimaryAuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: 15.3
+      DatabaseName: iodine
+      MasterUsername: !Sub '{{resolve:secretsmanager:${Environment}/db/master:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${Environment}/db/master:password}}'
+      DBClusterParameterGroupName: default.aurora-postgresql15
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      PreferredBackupWindow: 03:00-04:00
+      PreferredMaintenanceWindow: mon:04:00-mon:05:00
+      VpcSecurityGroupIds: 
+        - !Ref PrimaryDBSecurityGroup
+      DBSubnetGroupName: !Ref PrimaryDBSubnetGroup
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  PrimaryAuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref PrimaryAuroraCluster
+      DBInstanceClass: !Ref DBInstanceClass
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Launch Templates
+  PrimaryLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${Environment}-primary-lt
+      LaunchTemplateData:
+        ImageId: !Ref AMIId
+        InstanceType: !Ref EC2InstanceType
+        SecurityGroupIds: 
+          - !Ref PrimaryAppSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource PrimaryASG --region ${AWS::Region}
+
+  DRLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${Environment}-dr-lt
+      LaunchTemplateData:
+        ImageId: !Ref AMIId
+        InstanceType: !Ref DREC2InstanceType
+        SecurityGroupIds: 
+          - !Ref DRAppSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum update -y
+            yum install -y aws-cfn-bootstrap
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource DRASG --region ${AWS::Region}
+
+  PrimaryASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref PrimaryPrivateSubnets
+      LaunchTemplate:
+        LaunchTemplateId: !Ref PrimaryLaunchTemplate
+        Version: !GetAtt PrimaryLaunchTemplate.LatestVersionNumber
+      CreationPolicy:
+        ResourceSignal:
+          Count: 2
+          Timeout: PT15M
+      MinSize: 2
+      MaxSize: 10
+      DesiredCapacity: 2
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      TargetGroupARNs:
+        - !Ref PrimaryTargetGroup
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+
+  # DR Region Resources
+  DRAuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: 15.3
+      DatabaseName: iodine
+      MasterUsername: !Sub '{{resolve:secretsmanager:${Environment}/db/master:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${Environment}/db/master:password}}'
+      DBClusterParameterGroupName: default.aurora-postgresql15
+      BackupRetentionPeriod: !Ref BackupRetentionPeriod
+      PreferredBackupWindow: 03:00-04:00
+      PreferredMaintenanceWindow: mon:04:00-mon:05:00
+      VpcSecurityGroupIds:
+        - !Ref DRDBSecurityGroup
+      DBSubnetGroupName: !Ref DRDBSubnetGroup
+      ReplicationSourceIdentifier: !GetAtt PrimaryAuroraCluster.ClusterResourceId
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DRAuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DRAuroraCluster
+      DBInstanceClass: !Ref DRDBInstanceClass
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+
+  DRASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref DRPrivateSubnets
+      LaunchTemplate:
+        LaunchTemplateId: !Ref DRLaunchTemplate
+        Version: !GetAtt DRLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 10
+      DesiredCapacity: 1
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      TargetGroupARNs:
+        - !Ref DRTargetGroup
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+
+  # AWS Backup Configuration
+  BackupVault:
+    Type: AWS::Backup::BackupVault
+    Properties:
+      BackupVaultName: !Sub ${Environment}-backup-vault
+      EncryptionKeyArn: !GetAtt BackupKey.Arn
+
+  BackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: !Sub ${Environment}-backup-plan
+        BackupPlanRule:
+          - RuleName: DailyBackups
+            TargetBackupVault: !Ref BackupVault
+            ScheduleExpression: cron(0 3 ? * * *)
+            StartWindowMinutes: 60
+            CompletionWindowMinutes: 120
+            Lifecycle:
+              DeleteAfterDays: !Ref BackupRetentionPeriod
+            CopyActions:
+              - DestinationBackupVaultArn: !Sub arn:aws:backup:${DRRegion}:${AWS::AccountId}:backup-vault/${Environment}-backup-vault
+                Lifecycle:
+                  DeleteAfterDays: !Ref BackupRetentionPeriod
+
+  BackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Properties:
+      BackupPlanId: !Ref BackupPlan
+      BackupSelection:
+        SelectionName: !Sub ${Environment}-backup-selection
+        IamRoleArn: !GetAtt BackupRole.Arn
+        Resources:
+          - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${PrimaryAuroraCluster}
+          - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+
+Outputs:
+  PrimaryAuroraEndpoint:
+    Description: Primary Aurora Cluster Endpoint
+    Value: !GetAtt PrimaryAuroraCluster.Endpoint.Address
+
+  DRAuroraEndpoint:
+    Description: DR Aurora Cluster Endpoint
+    Value: !GetAtt DRAuroraCluster.Endpoint.Address
+
+  PrimaryALBDNS:
+    Description: Primary ALB DNS Name
+    Value: !GetAtt PrimaryALB.DNSName
+
+  DRALBDNS:
+    Description: DR ALB DNS Name
+    Value: !GetAtt DRALB.DNSName
+
+  ApplicationURL:
+    Description: Application URL
+    Value: !Sub https://app.${Environment}.iodinesoftware.com

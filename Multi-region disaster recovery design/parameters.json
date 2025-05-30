@@ -1,0 +1,82 @@
+[
+  {
+    "ParameterKey": "Environment",
+    "ParameterValue": "production"
+  },
+  {
+    "ParameterKey": "PrimaryRegion",
+    "ParameterValue": "us-east-1"
+  },
+  {
+    "ParameterKey": "DRRegion",
+    "ParameterValue": "us-east-2"
+  },
+  {
+    "ParameterKey": "DBInstanceClass",
+    "ParameterValue": "db.r7g.xlarge"
+  },
+  {
+    "ParameterKey": "DRDBInstanceClass",
+    "ParameterValue": "db.r7g.large"
+  },
+  {
+    "ParameterKey": "EC2InstanceType",
+    "ParameterValue": "c6g.xlarge"
+  },
+  {
+    "ParameterKey": "DREC2InstanceType",
+    "ParameterValue": "t3.small"
+  },
+  {
+    "ParameterKey": "BackupRetentionPeriod",
+    "ParameterValue": "35"
+  },
+  {
+    "ParameterKey": "HostedZoneId",
+    "ParameterValue": "ZXXXXXXXXXX"
+  },
+  {
+    "ParameterKey": "CertificateArn",
+    "ParameterValue": "arn:aws:acm:us-east-1:123456789012:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  },
+  {
+    "ParameterKey": "PrimaryVPC",
+    "ParameterValue": "vpc-xxxxxxxx"
+  },
+  {
+    "ParameterKey": "DRVPC",
+    "ParameterValue": "vpc-yyyyyyyy"
+  },
+  {
+    "ParameterKey": "PrimaryPrivateSubnets",
+    "ParameterValue": "subnet-xxxxxxxx,subnet-yyyyyyyy"
+  },
+  {
+    "ParameterKey": "DRPrivateSubnets",
+    "ParameterValue": "subnet-aaaaaaaa,subnet-bbbbbbbb"
+  },
+  {
+    "ParameterKey": "PrimaryPublicSubnets",
+    "ParameterValue": "subnet-pppppppp,subnet-qqqqqqqq"
+  },
+  {
+    "ParameterKey": "DRPublicSubnets",
+    "ParameterValue": "subnet-rrrrrrrr,subnet-ssssssss"
+  },
+  {
+    "ParameterKey": "PrimaryDBSecurityGroup",
+    "ParameterValue": "sg-xxxxxxxx"
+  },
+  {
+    "ParameterKey": "DRDBSecurityGroup",
+    "ParameterValue": "sg-yyyyyyyy"
+  },
+  {
+    "ParameterKey": "PrimaryDBSubnetGroup",
+    "ParameterValue": "primary-db-subnet-group"
+  },
+  {
+    "ParameterKey": "DRDBSubnetGroup",
+    "ParameterValue": "dr-db-subnet-group"
+  }
+]
