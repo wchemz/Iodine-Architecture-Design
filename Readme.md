@@ -23,10 +23,12 @@ This repository contains comprehensive architecture documentation for various co
 - Single sign-on experience for data team
 
 ### [SageMaker Pipeline](./Sagemaker%20pipeline/)
-- Clinical AI model training pipeline
-- 40% cost optimization
-- 25% accuracy improvement
-- HIPAA-compliant infrastructure
+- Clinical AI model training pipeline with IAM RDS authentication
+- Secure data extraction from Aurora PostgreSQL using IAM tokens
+- 40% cost optimization through Spot instances
+- 25% accuracy improvement in clinical AI models
+- HIPAA-compliant infrastructure with end-to-end encryption
+- Automated metrics logging to RDS with IAM authentication
 
 ## Key Features
 
@@ -52,3 +54,4 @@ This repository contains comprehensive architecture documentation for various co
 
 For questions or support, please contact:
 - AWS Team: Wei Chen (Sr. Solutions Architect, wchemz@amazon.com)
+- AWS Team: McGraw, Milan (Senior AI/ML Specialist, mmcgraw@amazon.com)
